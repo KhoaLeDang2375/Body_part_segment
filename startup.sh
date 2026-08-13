@@ -8,6 +8,7 @@
 #      --system-site-packages → bỏ qua tải 2x PyTorch ~5GB
 #   3. Cài parallel: PartCATSeg deps + SAM3 deps cài đồng thời
 #   4. libmamba solver: conda solve từ 5 phút → 5 giây
+#   5. Bỏ qua compile flash-attn từ source để tránh treo 15-20 phút C++ compile
 #
 # USAGE:
 #   cd /workspace
@@ -233,10 +234,8 @@ fast_pip_install -e .
 
 fast_pip_install -r "$REPO_DIR/part_sam_pipeline/requirements.txt"
 
-echo "  Cài FlashAttention (optional)..."
+# Bỏ qua cài flash-attn từ source code (.tar.gz) để không bị kẹt compile C++ 15-20 phút
 fast_pip_install einops ninja 2>/dev/null || true
-pip install flash-attn --no-build-isolation 2>/dev/null || echo "  (FlashAttention bỏ qua — không ảnh hưởng chức năng)"
-
 echo "  ✓ SAM3 environment ready"
 conda deactivate
 
