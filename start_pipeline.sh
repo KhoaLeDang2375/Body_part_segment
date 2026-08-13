@@ -124,7 +124,16 @@ cd "$REPO_DIR"
 echo "=============================================="
 echo " Access the UI at:"
 echo "   http://localhost:$PIPELINE_PORT"
-echo "   https://\$(hostname)-${PIPELINE_PORT}.proxy.runpod.net"
+# RunPod injects $RUNPOD_POD_ID automatically — use it for the correct proxy URL
+if [ -n "$RUNPOD_POD_ID" ]; then
+    echo "   https://${RUNPOD_POD_ID}-${PIPELINE_PORT}.proxy.runpod.net"
+else
+    # Fallback: Derive from hostname (works on most RunPod setups)
+    POD_HOSTNAME=$(hostname 2>/dev/null || echo "your-pod-id")
+    echo "   https://${POD_HOSTNAME}-${PIPELINE_PORT}.proxy.runpod.net"
+fi
+echo ""
+echo "💡 Hoặc từ RunPod Dashboard: Connect → HTTP Service [${PIPELINE_PORT}]"
 echo "=============================================="
 echo ""
 
