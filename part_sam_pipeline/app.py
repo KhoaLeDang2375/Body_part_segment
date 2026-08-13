@@ -341,7 +341,7 @@ if __name__ == "__main__":
     from .catseg_client import CatSegClient
     client = CatSegClient(app_args.catseg_url)
     logger.info(f"Checking PartCATSeg server at {app_args.catseg_url} ...")
-    if not client.wait_for_server(max_retries=15, interval=2.0):
+    if not client.wait_for_server(max_retries=30, interval=2.0):
         logger.error(
             f"PartCATSeg server not available at {app_args.catseg_url}. "
             f"Make sure to start it first:\n"

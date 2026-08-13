@@ -52,7 +52,7 @@ def _get_engine():
         from inference_engine import InferenceEngine
         logger.info(f"Loading PartCATSeg model on {cli_args.device} ...")
         _engine = InferenceEngine(device=cli_args.device)
-        # Trigger lazy loading immediately
+        _engine._ensure_loaded()
         logger.info("Model loaded. Ready to serve requests.")
     return _engine
 
