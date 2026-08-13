@@ -79,7 +79,7 @@ app = FastAPI(
 
 
 @app.get("/health")
-async def health():
+def health():
     """Health check endpoint."""
     engine = _get_engine()
     model_loaded = engine._model is not None
@@ -91,7 +91,7 @@ async def health():
 
 
 @app.get("/classes")
-async def get_classes():
+def get_classes():
     """Return available object classes and their parts."""
     from app_config import VOC_OBJ_CLASSES, OBJ_TO_PARTS
     return {
@@ -101,7 +101,7 @@ async def get_classes():
 
 
 @app.post("/segment_parts")
-async def segment_parts(
+def segment_parts(
     image_file: UploadFile = File(...),
     obj_class: str = Form(default="person"),
     conf_threshold: float = Form(default=0.3),

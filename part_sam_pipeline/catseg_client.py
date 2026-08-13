@@ -130,10 +130,9 @@ class CatSegClient:
                 if status.get("status") == "ok":
                     logger.info(f"PartCATSeg server ready (attempt {i+1})")
                     return True
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Health check attempt {i+1}/{max_retries} failed: {e}")
             if i < max_retries - 1:
-                logger.info(f"Waiting for PartCATSeg server... ({i+1}/{max_retries})")
                 time.sleep(interval)
         logger.error(f"PartCATSeg server not available after {max_retries} attempts")
         return False
