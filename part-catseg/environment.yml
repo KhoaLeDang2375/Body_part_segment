@@ -1,0 +1,16 @@
+name: partcatseg
+channels:
+  - nvidia
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - cuda=12.1.1
+  - pip
+  - pip:
+    # PyTorch + CUDA 12.1 (compatible with RTX Ada / sm_89)
+    - torch==2.2.2 --index-url https://download.pytorch.org/whl/cu121
+    - torchvision==0.17.2 --index-url https://download.pytorch.org/whl/cu121
+    # All other dependencies
+    - -r requirements.txt
