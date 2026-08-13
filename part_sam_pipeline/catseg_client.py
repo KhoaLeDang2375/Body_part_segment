@@ -114,14 +114,10 @@ class CatSegClient:
 
     def wait_for_server(self, max_retries: int = 30, interval: float = 2.0) -> bool:
         """
-        Wait for the PartCATSeg server to become available.
-
-        Args:
-            max_retries: Maximum number of retry attempts.
-            interval:    Seconds between retries.
+        Wait for the PartCATSeg server to become available AND model to be loaded.
 
         Returns:
-            True if server is ready, False if timed out.
+            True if server is ready (model loaded), False if timed out.
         """
         import time
         for i in range(max_retries):
@@ -130,6 +126,10 @@ class CatSegClient:
                 if status.get("status") == "ok":
                     logger.info(f"PartCATSeg server ready (attempt {i+1})")
                     return True
+                elif status.get("status") == "loading":
+                    logger.info(f"PartCATSeg model loading... ({i+1}/{max_retries})")
+                else:
+                    logger.warning(f"Unknown status: {status}")
             except Exception as e:
                 logger.warning(f"Health check attempt {i+1}/{max_retries} failed: {e}")
             if i < max_retries - 1:

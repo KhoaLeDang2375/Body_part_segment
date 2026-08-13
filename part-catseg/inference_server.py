@@ -20,7 +20,9 @@ import argparse
 import base64
 import io
 import logging
+import threading
 import time
+from contextlib import asynccontextmanager
 from typing import Optional
 
 import numpy as np
@@ -42,24 +44,33 @@ parser.add_argument("--host", type=str, default="0.0.0.0", help="Server host")
 cli_args = parser.parse_args()
 
 # ─────────────────────────────────────────────────────────────────
-# Global engine (lazy-loaded)
+# Global engine — loaded in background thread at startup
 # ─────────────────────────────────────────────────────────────────
 _engine = None
+_model_ready = False  # True only after weights fully loaded
 
-def _get_engine():
-    global _engine
-    if _engine is None:
+def _load_model_background():
+    """Run model loading in a background thread so uvicorn starts immediately."""
+    global _engine, _model_ready
+    try:
         from inference_engine import InferenceEngine
-        logger.info(f"Loading PartCATSeg model on {cli_args.device} ...")
+        logger.info(f"[Background] Loading PartCATSeg model on {cli_args.device} ...")
         _engine = InferenceEngine(device=cli_args.device)
         _engine._ensure_loaded()
-        logger.info("Model loaded. Ready to serve requests.")
+        _model_ready = True
+        logger.info("[Background] PartCATSeg model loaded. Ready to serve requests.")
+    except Exception as e:
+        logger.error(f"[Background] Model loading failed: {e}", exc_info=True)
+
+def _get_engine():
+    """Return engine. Raises RuntimeError if model not ready yet."""
+    if not _model_ready or _engine is None:
+        raise RuntimeError("Model not ready yet. Please wait.")
     return _engine
 
 
 def _mask_to_base64_png(mask: np.ndarray) -> str:
     """Convert a boolean mask (H, W) to base64-encoded PNG string."""
-    # Convert bool mask to uint8 (0 or 255)
     mask_uint8 = (mask.astype(np.uint8)) * 255
     img = Image.fromarray(mask_uint8, mode="L")
     buf = io.BytesIO()
@@ -69,25 +80,38 @@ def _mask_to_base64_png(mask: np.ndarray) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────
-# FastAPI App
+# FastAPI App — model loads in background at startup
 # ─────────────────────────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start model loading in background thread when uvicorn starts."""
+    thread = threading.Thread(target=_load_model_background, daemon=True)
+    thread.start()
+    logger.info("uvicorn started. Model loading in background thread...")
+    yield  # server runs here
+    logger.info("Shutting down PartCATSeg server.")
+
 app = FastAPI(
     title="PartCATSeg Inference Server",
     description="Body part segmentation API using PartCATSeg model",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 
 @app.get("/health")
 def health():
-    """Health check endpoint."""
-    engine = _get_engine()
-    model_loaded = engine._model is not None
-    return {
-        "status": "ok",
-        "model_loaded": model_loaded,
-        "device": cli_args.device,
-    }
+    """
+    Lightweight health check — responds immediately without blocking.
+    Returns {"status": "loading"} while model weights are loading,
+    and {"status": "ok"} once ready.
+    """
+    if not _model_ready:
+        return JSONResponse(
+            status_code=200,
+            content={"status": "loading", "model_loaded": False, "device": cli_args.device},
+        )
+    return {"status": "ok", "model_loaded": True, "device": cli_args.device}
 
 
 @app.get("/classes")
@@ -177,10 +201,8 @@ def segment_parts(
 if __name__ == "__main__":
     logger.info(f"Starting PartCATSeg server on {cli_args.host}:{cli_args.port}")
     logger.info(f"Device: {cli_args.device}")
-
-    # Pre-load model at startup
-    _get_engine()
-
+    logger.info("Model will load in background thread after uvicorn starts.")
+    # Model loading happens in background via lifespan event
     uvicorn.run(
         app,
         host=cli_args.host,
