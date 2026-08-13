@@ -252,3 +252,111 @@ class InferenceEngine:
 
         torch.cuda.empty_cache()
         return overlay_img, part_table
+
+    # ── Raw mask extraction (for API / pipeline use) ──────────
+
+    @torch.no_grad()
+    def predict_raw_masks(
+        self,
+        pil_image: Image.Image,
+        obj_class_name: str,
+        conf_threshold: float = 0.3,
+        selected_parts: Optional[List[str]] = None,
+    ) -> dict:
+        """
+        Run part segmentation and return raw binary masks per body part.
+
+        Args:
+            pil_image:      Input image (any size; will be resized ≤ 768 px).
+            obj_class_name: Object class to segment (must be in VOC_OBJ_CLASSES).
+            conf_threshold: Minimum confidence to include a part mask.
+            selected_parts: Optional list of part names to filter.
+
+        Returns:
+            Dict with keys:
+                "masks":  Dict[str, np.ndarray]  — {part_name: binary mask (H, W) bool}
+                "scores": Dict[str, float]       — {part_name: max_confidence}
+        """
+        self._ensure_loaded()
+
+        # ── Validate object class ─────────────────────────────────
+        if obj_class_name not in VOC_OBJ_CLASSES:
+            raise ValueError(
+                f"'{obj_class_name}' is not in the supported object class list. "
+                f"Choose from: {VOC_OBJ_CLASSES}"
+            )
+        obj_class_idx = VOC_OBJ_CLASSES.index(obj_class_name)
+
+        # ── Prepare image tensor ──────────────────────────────────
+        orig_w, orig_h = pil_image.size
+        img_tensor = _pil_to_tensor(pil_image)
+        _, resized_h, resized_w = img_tensor.shape
+
+        # ── Build Detectron2-style batched input ──────────────────
+        dummy_part_seg = torch.zeros(1, resized_h, resized_w, dtype=torch.long)
+        dummy_obj_seg  = torch.zeros(1, resized_h, resized_w, dtype=torch.long)
+
+        instances = Instances(image_size=(resized_h, resized_w))
+        instances.gt_classes = torch.tensor([obj_class_idx], dtype=torch.long)
+        instances.gt_boxes   = Boxes(torch.tensor(
+            [[0, 0, resized_w, resized_h]], dtype=torch.float32
+        ))
+
+        batched_input = {
+            "image":            img_tensor,
+            "height":           orig_h,
+            "width":            orig_w,
+            "instances":        instances,
+            "obj_part_sem_seg": dummy_part_seg,
+            "sem_seg":          dummy_obj_seg,
+        }
+
+        # ── Run inference ─────────────────────────────────────────
+        outputs = self._model([batched_input])
+        sem_seg = outputs[0]["sem_seg"].cpu()  # (K, H, W)
+
+        # ── Resize to original image size ─────────────────────────
+        sem_seg_rs = F.interpolate(
+            sem_seg.unsqueeze(0).float(),
+            size=(orig_h, orig_w),
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(0)  # (K, H, W)
+
+        # ── Extract per-part binary masks ─────────────────────────
+        classes = self._metadata.stuff_classes
+        sel_set = None
+        if selected_parts:
+            sel_set = {p.lower().strip() for p in selected_parts}
+
+        masks_dict = {}
+        scores_dict = {}
+        for idx, cls_name in enumerate(classes):
+            if idx >= sem_seg_rs.shape[0]:
+                continue
+            # Extract short part name: "person's head" → "head"
+            part_name = cls_name.split("'s")[1].strip() if "'s" in cls_name else cls_name
+
+            # Filter by selected parts if specified
+            if sel_set is not None:
+                if part_name.lower() not in sel_set and cls_name.lower() not in sel_set:
+                    continue
+
+            max_score = float(sem_seg_rs[idx].max())
+            if max_score < conf_threshold:
+                continue
+
+            # Build binary mask via argmax: pixel belongs to this part if
+            # this class has the highest score AND exceeds threshold
+            max_conf, class_map = sem_seg_rs.max(dim=0)
+            binary_mask = (class_map == idx) & (max_conf >= conf_threshold)
+            binary_mask_np = binary_mask.numpy().astype(np.bool_)
+
+            if binary_mask_np.sum() == 0:
+                continue
+
+            masks_dict[part_name] = binary_mask_np
+            scores_dict[part_name] = round(max_score, 4)
+
+        torch.cuda.empty_cache()
+        return {"masks": masks_dict, "scores": scores_dict}
