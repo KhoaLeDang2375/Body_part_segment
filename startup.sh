@@ -33,6 +33,15 @@ REPO_DIR="$(pwd)"
 CHECKPOINT_DIR="$WORKSPACE/checkpoints"
 MINICONDA_DIR="$WORKSPACE/miniconda3"
 
+# Helper function để cài pip với uv (fallback về pip thường nếu uv lỗi)
+fast_pip_install() {
+    if command -v uv &>/dev/null; then
+        uv pip install "$@"
+    else
+        pip install --quiet "$@"
+    fi
+}
+
 # =============================================================================
 # STEP 0: Check HF Token (needed for SAM3 checkpoint)
 # =============================================================================
@@ -49,7 +58,7 @@ fi
 # STEP 1: Setup persistent storage
 # =============================================================================
 echo ""
-echo "[1/7] Setting up persistent storage..."
+echo "[1/7] Setting up Persistent Storage..."
 
 mkdir -p "$WORKSPACE/.cache/huggingface"
 mkdir -p "$WORKSPACE/.cache/torch"
@@ -119,13 +128,18 @@ echo "  ✓ Conda: $(conda --version) | Solver: libmamba"
 echo ""
 echo "[3/7] Installing uv (fast package installer)..."
 
+# Ensure PATH includes common uv binary locations
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+
+if ! command -v uv &>/dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null || pip install --quiet uv 2>/dev/null || true
+    export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+fi
+
 if command -v uv &>/dev/null; then
-    echo "  ✓ uv already installed: $(uv --version)"
+    echo "  ✓ uv installed successfully: $(uv --version)"
 else
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.cargo/bin:$PATH"
-    grep -qF '.cargo/bin' ~/.bashrc || echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
-    echo "  ✓ uv installed: $(uv --version)"
+    echo "  ⚠️ Could not install uv, falling back to standard pip."
 fi
 
 # =============================================================================
@@ -136,7 +150,6 @@ echo ""
 echo "[4/7] Setting up PartCATSeg environment (partcatseg)..."
 cd "$REPO_DIR"
 
-# Kiểm tra PyTorch hệ thống có dùng được không
 SYSTEM_TORCH_OK=false
 SYSTEM_TORCH_VERSION=""
 if python -c "import torch; v=torch.__version__; exit(0 if v.startswith('2.2') else 1)" 2>/dev/null; then
@@ -150,7 +163,6 @@ if conda info --envs | grep -q "^partcatseg "; then
 else
     echo "  Tạo conda env 'partcatseg' (Python 3.11)..."
     if [ "$SYSTEM_TORCH_OK" = true ]; then
-        # ⚡ Kế thừa torch của hệ thống: env nhỏ hơn, tạo nhanh hơn
         conda create -n partcatseg python=3.11 --system-site-packages -y -q
         echo "  ✓ Env tạo với --system-site-packages (kế thừa PyTorch hệ thống)"
     else
@@ -160,20 +172,18 @@ fi
 
 conda activate partcatseg
 
-# ⚡ OPTIMIZATION 3: uv pip thay vì pip thường
-echo "  Cài PartCATSeg dependencies bằng uv (nhanh ~15x)..."
+echo "  Cài PartCATSeg dependencies..."
 cd "$REPO_DIR/part-catseg"
 
-# Chỉ cài PyTorch nếu hệ thống chưa có hoặc version sai
 if ! python -c "import torch; assert torch.__version__.startswith('2.2')" 2>/dev/null; then
     echo "  Cài PyTorch 2.2.2 cho partcatseg..."
-    uv pip install torch==2.2.2 torchvision==0.17.2 --index-url https://download.pytorch.org/whl/cu121
+    fast_pip_install torch==2.2.2 torchvision==0.17.2 --index-url https://download.pytorch.org/whl/cu121
 else
     echo "  ✓ PyTorch $(python -c 'import torch; print(torch.__version__)') đã có — bỏ qua cài lại!"
 fi
 
-uv pip install -r requirements.txt
-uv pip install fastapi "uvicorn[standard]"
+fast_pip_install -r requirements.txt
+fast_pip_install fastapi "uvicorn[standard]"
 
 echo "  Cài Detectron2..."
 if ! python -c "import detectron2" 2>/dev/null; then
@@ -200,7 +210,6 @@ if conda info --envs | grep -q "^sam3env "; then
     echo "  Env 'sam3env' đã tồn tại, bỏ qua tạo mới."
 else
     echo "  Tạo conda env 'sam3env' (Python 3.12)..."
-    # SAM3 cần timm>=1.0.17, PyTorch hệ thống (template 2.4+) thường đủ dùng
     if python -c "import torch; assert int(torch.__version__.split('.')[0]) >= 2" 2>/dev/null; then
         conda create -n sam3env python=3.12 --system-site-packages -y -q
         echo "  ✓ Env tạo với --system-site-packages (kế thừa PyTorch hệ thống)"
@@ -211,23 +220,21 @@ fi
 
 conda activate sam3env
 
-# Cài PyTorch cho SAM3 chỉ nếu chưa có
 if ! python -c "import torch" 2>/dev/null; then
     echo "  Cài PyTorch (CUDA 12.8) cho sam3env..."
-    uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+    fast_pip_install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 else
     echo "  ✓ PyTorch $(python -c 'import torch; print(torch.__version__)') đã có — bỏ qua cài lại!"
 fi
 
-echo "  Cài SAM3 + pipeline dependencies bằng uv..."
+echo "  Cài SAM3 + pipeline dependencies..."
 cd "$REPO_DIR/sam3"
-uv pip install -e .
+fast_pip_install -e .
 
-uv pip install -r "$REPO_DIR/part_sam_pipeline/requirements.txt"
+fast_pip_install -r "$REPO_DIR/part_sam_pipeline/requirements.txt"
 
-# Optional: FlashAttention
 echo "  Cài FlashAttention (optional)..."
-uv pip install einops ninja 2>/dev/null || true
+fast_pip_install einops ninja 2>/dev/null || true
 pip install flash-attn --no-build-isolation 2>/dev/null || echo "  (FlashAttention bỏ qua — không ảnh hưởng chức năng)"
 
 echo "  ✓ SAM3 environment ready"
@@ -249,7 +256,7 @@ if [ -f "$VOC_WEIGHT_FILE" ]; then
 else
     echo "  Tải partcatseg_voc.pth (~885 MB)..."
     conda activate partcatseg
-    uv pip install gdown -q
+    fast_pip_install gdown
     gdown "$VOC_WEIGHT_URL" -O "$VOC_WEIGHT_FILE"
     conda deactivate
     echo "  ✓ PartCATSeg weights tải xong"
