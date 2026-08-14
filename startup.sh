@@ -9,6 +9,8 @@
 #   3. Cài parallel: PartCATSeg deps + SAM3 deps cài đồng thời
 #   4. libmamba solver: conda solve từ 5 phút → 5 giây
 #   5. Bỏ qua compile flash-attn từ source để tránh treo 15-20 phút C++ compile
+#   6. Dùng conda run / đường dẫn trực tiếp thay conda activate (fix script bug)
+#   7. Detectron2 cài vào /workspace (persistent qua restart, không dùng /tmp)
 #
 # USAGE:
 #   cd /workspace
@@ -41,6 +43,25 @@ fast_pip_install() {
     else
         pip install --quiet "$@"
     fi
+}
+
+# Helper: run pip install inside a conda env (no conda activate needed)
+env_pip_install() {
+    local env_name="$1"
+    shift
+    local env_python="$CONDA_ENVS_DIR/$env_name/bin/python"
+    if command -v uv &>/dev/null; then
+        uv pip install --python "$env_python" "$@"
+    else
+        "$env_python" -m pip install --quiet "$@"
+    fi
+}
+
+# Helper: run python inside a conda env
+env_python() {
+    local env_name="$1"
+    shift
+    "$CONDA_ENVS_DIR/$env_name/bin/python" "$@"
 }
 
 # =============================================================================
@@ -95,9 +116,11 @@ echo "[2/7] Setting up Conda (with libmamba solver for fast resolve)..."
 
 if [ -f "$MINICONDA_DIR/bin/conda" ]; then
     export PATH="$MINICONDA_DIR/bin:$PATH"
+    CONDA_ENVS_DIR="$MINICONDA_DIR/envs"
     echo "  ✓ Found Miniconda at $MINICONDA_DIR"
 elif [ -f "/opt/conda/bin/conda" ]; then
     export PATH="/opt/conda/bin:$PATH"
+    CONDA_ENVS_DIR="/opt/conda/envs"
     echo "  ✓ Found Conda at /opt/conda"
 else
     echo "  Installing Miniconda to $MINICONDA_DIR..."
@@ -106,6 +129,7 @@ else
     bash miniconda.sh -b -p "$MINICONDA_DIR"
     rm miniconda.sh
     export PATH="$MINICONDA_DIR/bin:$PATH"
+    CONDA_ENVS_DIR="$MINICONDA_DIR/envs"
     echo "  ✓ Miniconda installed"
 fi
 
@@ -146,14 +170,16 @@ fi
 # =============================================================================
 # STEP 4: Setup PartCATSeg environment
 # ⚡ OPTIMIZATION 2: --system-site-packages để kế thừa PyTorch của hệ thống
+# ⚡ FIX: Dùng env_pip_install / env_python thay conda activate
 # =============================================================================
 echo ""
 echo "[4/7] Setting up PartCATSeg environment (partcatseg)..."
 cd "$REPO_DIR"
 
+# Check system PyTorch — accept any 2.x or higher (not just 2.2.x)
 SYSTEM_TORCH_OK=false
 SYSTEM_TORCH_VERSION=""
-if python -c "import torch; v=torch.__version__; exit(0 if v.startswith('2.2') else 1)" 2>/dev/null; then
+if python -c "import torch; v=int(torch.__version__.split('.')[0]); exit(0 if v >= 2 else 1)" 2>/dev/null; then
     SYSTEM_TORCH_VERSION=$(python -c "import torch; print(torch.__version__)" 2>/dev/null)
     SYSTEM_TORCH_OK=true
     echo "  ✓ Hệ thống đã có PyTorch $SYSTEM_TORCH_VERSION — sẽ dùng lại, KHÔNG tải lại!"
@@ -171,37 +197,38 @@ else
     fi
 fi
 
-conda activate partcatseg
-
 echo "  Cài PartCATSeg dependencies..."
 cd "$REPO_DIR/part-catseg"
 
-if ! python -c "import torch; assert torch.__version__.startswith('2.2')" 2>/dev/null; then
+# Check if partcatseg env has correct PyTorch
+if ! env_python partcatseg -c "import torch; assert torch.__version__.startswith('2.2')" 2>/dev/null; then
     echo "  Cài PyTorch 2.2.2 cho partcatseg..."
-    fast_pip_install torch==2.2.2 torchvision==0.17.2 --index-url https://download.pytorch.org/whl/cu121
+    env_pip_install partcatseg torch==2.2.2 torchvision==0.17.2 --index-url https://download.pytorch.org/whl/cu121
 else
-    echo "  ✓ PyTorch $(python -c 'import torch; print(torch.__version__)') đã có — bỏ qua cài lại!"
+    TORCH_VER=$(env_python partcatseg -c 'import torch; print(torch.__version__)' 2>/dev/null)
+    echo "  ✓ PyTorch $TORCH_VER đã có — bỏ qua cài lại!"
 fi
 
-fast_pip_install -r requirements.txt
-fast_pip_install fastapi "uvicorn[standard]"
+env_pip_install partcatseg -r requirements.txt
+env_pip_install partcatseg fastapi "uvicorn[standard]"
 
 echo "  Cài Detectron2..."
-if ! python -c "import detectron2" 2>/dev/null; then
-    if [ ! -d "/tmp/detectron2" ]; then
-        git clone -q https://github.com/facebookresearch/detectron2.git /tmp/detectron2
+D2_DIR="$WORKSPACE/detectron2"
+if ! env_python partcatseg -c "import detectron2" 2>/dev/null; then
+    if [ ! -d "$D2_DIR" ]; then
+        git clone -q https://github.com/facebookresearch/detectron2.git "$D2_DIR"
     fi
-    pip install --no-build-isolation --no-deps -e /tmp/detectron2 2>/dev/null || true
+    env_pip_install partcatseg --no-build-isolation --no-deps -e "$D2_DIR" 2>/dev/null || true
 else
     echo "  ✓ Detectron2 đã cài — bỏ qua!"
 fi
 
 echo "  ✓ PartCATSeg environment ready"
-conda deactivate
 
 # =============================================================================
 # STEP 5: Setup SAM3 environment
 # ⚡ OPTIMIZATION 2: Tương tự — dùng --system-site-packages nếu torch mới hơn
+# ⚡ FIX: Dùng env_pip_install / env_python thay conda activate
 # =============================================================================
 echo ""
 echo "[5/7] Setting up SAM3 environment (sam3env)..."
@@ -219,25 +246,23 @@ else
     fi
 fi
 
-conda activate sam3env
-
-if ! python -c "import torch" 2>/dev/null; then
+if ! env_python sam3env -c "import torch" 2>/dev/null; then
     echo "  Cài PyTorch (CUDA 12.8) cho sam3env..."
-    fast_pip_install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+    env_pip_install sam3env torch torchvision --index-url https://download.pytorch.org/whl/cu128
 else
-    echo "  ✓ PyTorch $(python -c 'import torch; print(torch.__version__)') đã có — bỏ qua cài lại!"
+    TORCH_VER=$(env_python sam3env -c 'import torch; print(torch.__version__)' 2>/dev/null)
+    echo "  ✓ PyTorch $TORCH_VER đã có — bỏ qua cài lại!"
 fi
 
 echo "  Cài SAM3 + pipeline dependencies..."
 cd "$REPO_DIR/sam3"
-fast_pip_install -e .
+env_pip_install sam3env -e .
 
-fast_pip_install -r "$REPO_DIR/part_sam_pipeline/requirements.txt"
+env_pip_install sam3env -r "$REPO_DIR/part_sam_pipeline/requirements.txt"
 
 # Bỏ qua cài flash-attn từ source code (.tar.gz) để không bị kẹt compile C++ 15-20 phút
-fast_pip_install einops ninja 2>/dev/null || true
+env_pip_install sam3env einops ninja 2>/dev/null || true
 echo "  ✓ SAM3 environment ready"
-conda deactivate
 
 # =============================================================================
 # STEP 6: Download PartCATSeg weights
@@ -254,10 +279,8 @@ if [ -f "$VOC_WEIGHT_FILE" ]; then
     echo "  ✓ PartCATSeg weights đã có — bỏ qua tải lại"
 else
     echo "  Tải partcatseg_voc.pth (~885 MB)..."
-    conda activate partcatseg
-    fast_pip_install gdown
-    gdown "$VOC_WEIGHT_URL" -O "$VOC_WEIGHT_FILE"
-    conda deactivate
+    env_pip_install partcatseg gdown
+    env_python partcatseg -m gdown "$VOC_WEIGHT_URL" -O "$VOC_WEIGHT_FILE"
     echo "  ✓ PartCATSeg weights tải xong"
 fi
 
@@ -275,15 +298,14 @@ if [ -f "$CKPT_FILE" ]; then
 elif [ -z "$HF_TOKEN" ]; then
     echo "  ⚠️  Không có HF_TOKEN. Tải thủ công sau:"
     echo "     export HF_TOKEN='hf_xxx'"
-    echo "     conda activate sam3env"
-    echo "     hf download facebook/sam3 sam3.pt --local-dir $CHECKPOINT_DIR --token \$HF_TOKEN"
+    SAM3_PYTHON="$CONDA_ENVS_DIR/sam3env/bin/python"
+    echo "     $SAM3_PYTHON -m huggingface_hub download facebook/sam3 sam3.pt --local-dir $CHECKPOINT_DIR --token \$HF_TOKEN"
 else
     echo "  Tải SAM3 checkpoint từ Hugging Face (~4 GB)..."
-    conda activate sam3env
-    hf download facebook/sam3 sam3.pt \
+    SAM3_PYTHON="$CONDA_ENVS_DIR/sam3env/bin/python"
+    "$SAM3_PYTHON" -m huggingface_hub download facebook/sam3 sam3.pt \
         --local-dir "$CHECKPOINT_DIR" \
         --token "$HF_TOKEN"
-    conda deactivate
     echo "  ✓ SAM3 checkpoint tải xong"
 fi
 

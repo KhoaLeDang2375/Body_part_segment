@@ -125,7 +125,7 @@ def get_classes():
 
 
 @app.post("/segment_parts")
-def segment_parts(
+async def segment_parts(
     image_file: UploadFile = File(...),
     obj_class: str = Form(default="person"),
     conf_threshold: float = Form(default=0.3),

@@ -140,9 +140,9 @@ cd part-catseg
 pip install -r requirements.txt
 pip install fastapi uvicorn[standard]
 
-# Detectron2
-git clone https://github.com/facebookresearch/detectron2.git /tmp/detectron2
-pip install --no-build-isolation --no-deps -e /tmp/detectron2
+# Detectron2 (cài vào /workspace để persistent qua restart)
+git clone https://github.com/facebookresearch/detectron2.git /workspace/detectron2
+pip install --no-build-isolation --no-deps -e /workspace/detectron2
 
 # Download weights
 pip install gdown
@@ -202,7 +202,7 @@ Script này sẽ:
 **Terminal 1 — PartCATSeg Server:**
 ```bash
 conda activate partcatseg
-export PYTHONPATH="/tmp/detectron2:$PYTHONPATH"
+export PYTHONPATH="/workspace/detectron2:$PYTHONPATH"
 cd /workspace/Body_part_segment/part-catseg
 python inference_server.py --port 8001 --device cuda
 ```
@@ -261,27 +261,14 @@ tail -f /workspace/pipeline.log
 
 ## ♻️ 6. Restart Pod
 
-Khi restart Pod, cần restore lại môi trường:
+Khi restart Pod, chỉ cần chạy lại pipeline:
 
 ```bash
-cd /workspace
-
-# Restore Conda PATH
-export PATH="/workspace/miniconda3/bin:$PATH"
-eval "$(conda shell.bash hook)"
-
-# Reinstall Detectron2 (bị xóa khỏi /tmp khi restart)
-conda activate partcatseg
-git clone https://github.com/facebookresearch/detectron2.git /tmp/detectron2
-pip install --no-build-isolation --no-deps -e /tmp/detectron2
-conda deactivate
-
-# Start pipeline
 cd /workspace/Body_part_segment
 bash start_pipeline.sh
 ```
 
-> 💡 **Tip:** Conda envs, checkpoints, code trong `/workspace` sẽ **TỒN TẠI** qua restart. Chỉ có `/tmp/detectron2` cần clone lại.
+> 💡 **Tip:** Tất cả file trong `/workspace` (conda envs, checkpoints, Detectron2, code) đều **TỒN TẠI** qua restart. Script `start_pipeline.sh` sẽ tự kiểm tra và recovery nếu thiếu gì.
 
 ---
 
@@ -292,7 +279,7 @@ bash start_pipeline.sh
 | `bash: conda: command not found` | Conda chưa có trong PATH | `export PATH="/workspace/miniconda3/bin:$PATH"` |
 | `CondaToSNonInteractiveError` | Chưa chấp nhận Anaconda ToS | Chạy 2 lệnh `conda tos accept` (xem Bước 3.1) |
 | `Connection refused (port 8001)` | PartCATSeg server chưa start | Kiểm tra log: `tail -f /workspace/catseg_server.log` |
-| `ModuleNotFoundError: detectron2` | Detectron2 bị xóa sau restart | Clone lại: `git clone ... /tmp/detectron2` rồi `pip install -e` |
+| `ModuleNotFoundError: detectron2` | Detectron2 bị xóa | `start_pipeline.sh` tự recovery; hoặc: `git clone ... /workspace/detectron2` rồi `pip install -e` |
 | `CUDA Out of Memory` | Không đủ VRAM cho 2 model | Dùng GPU 24GB+, hoặc giảm kích thước ảnh |
 | `401 / Gated Repo` (SAM3) | HF Token chưa set hoặc chưa approved | Kiểm tra `echo $HF_TOKEN`, xin access trên HF |
 | `PartCATSeg returns 0 parts` | Ảnh không chứa người hoặc conf quá cao | Giảm Confidence Threshold, chọn obj_class đúng |
